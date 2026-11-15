@@ -1,7 +1,7 @@
-import { parseConnectMessage, type Env } from '../types';
-import { decryptHost, encryptHost } from './crypto';
-import { APIError, json, readJSON } from './http';
-import { locateHost, type HostLocation } from './location';
+import { parseConnectMessage, type Env } from '../types.ts';
+import { decryptHost, encryptHost } from './crypto.ts';
+import { APIError, json, readJSON } from './http.ts';
+import { locateHost, type HostLocation } from './location.ts';
 import type { SystemInfo } from '../backend/system-info';
 
 export interface HostPayload {
@@ -118,7 +118,18 @@ export async function hostsRoute(request: Request, env: Env, accountId: string, 
     }
     previous = await decryptHost<HostPayload>(previousRow.encrypted_payload, env.ENCRYPTION_KEY, accountId, id);
     if (action === 'credentials' && request.method === 'POST') {
-      return json({ password: previous.password, privateKey: previous.privateKey });
+      const body = await readJSON(request);
+      if (body.purpose === 'connect') {
+        return previous.authMethod === 'publickey'
+          ? json({ privateKey: previous.privateKey })
+          : json({ password: previous.password });
+      }
+      if (body.purpose === 'password-field') {
+        return previous.authMethod === 'password'
+          ? json({ password: previous.password })
+          : json({ hasCredential: Boolean(previous.privateKey) });
+      }
+      throw new APIError('凭据用途无效。');
     }
     if (action === 'location' && request.method === 'POST') {
       await refreshLocation(previous);

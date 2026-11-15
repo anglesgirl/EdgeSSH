@@ -263,6 +263,7 @@ const ui = {
   revealPassword: element<HTMLButtonElement>('reveal-password'),
   keyField: element<HTMLElement>('key-field'),
   privateKey: element<HTMLTextAreaElement>('private-key'),
+  privateKeyStatus: element<HTMLElement>('private-key-status'),
   keyFile: element<HTMLInputElement>('key-file'),
   keyFileName: element<HTMLElement>('key-file-name'),
   initialCommand: element<HTMLInputElement>('initial-command'),
@@ -768,6 +769,7 @@ function setAuthMethod(method: AuthMethod): void {
   if (radio) radio.checked = true;
   ui.passwordField.hidden = method !== 'password';
   ui.keyField.hidden = method !== 'publickey';
+  updateSavedPrivateKeyStatus();
 }
 
 function cancelHistoryPasswordLoad(): void {
@@ -794,6 +796,7 @@ function clearPrivateKeyFields(): void {
 function clearCredentials(): void {
   resetPasswordField();
   clearPrivateKeyFields();
+  updateSavedPrivateKeyStatus();
 }
 
 // A stale async history-password decrypt must never overwrite the form. The
@@ -818,12 +821,32 @@ function targetLabel(host: string, port: number, username: string): string {
   return historyLabel(host, port, username);
 }
 
+function savedProfileForForm(): SavedProfile | undefined {
+  const id = ui.profileId.value;
+  if (!id) return undefined;
+  const profile = profiles.find((item) => item.id === id);
+  return profile && passwordContext(profile) === targetKey() ? profile : undefined;
+}
+
+function updateSavedPrivateKeyStatus(): void {
+  const profile = savedProfileForForm();
+  const saved = authMethod() === 'publickey' && profile?.authMethod === 'publickey' && profile.hasCredential;
+  ui.privateKeyStatus.hidden = !saved;
+  if (!saved) {
+    ui.privateKeyStatus.textContent = '';
+    return;
+  }
+  ui.privateKeyStatus.textContent = ui.privateKey.value.trim()
+    ? bilingual('已输入新私钥。连接成功后会替换此主机的已保存私钥。', 'A new private key is entered. It will replace this host\'s saved key only after a successful connection.')
+    : bilingual('此主机已有私钥，已隐藏。留空使用已保存私钥；输入新私钥并连接后才会替换。', 'This host has a saved private key, which is hidden. Leave blank to use it; a new key replaces it only after connecting with that key.');
+}
+
 function applyFormDefaults(): void {
   if (!ui.username.value.trim()) ui.username.value = 'root';
   if (!ui.port.value.trim() && !ui.port.validity.badInput) ui.port.value = '22';
 }
 
-function readProfileFromForm(password: string): Promise<SavedProfile> {
+function readProfileFromForm(password: string, privateKey: string, replacePrivateKey: boolean): Promise<SavedProfile> {
   applyFormDefaults();
   if (password.length > 4096) throw new Error(bilingual('密码不能超过 4096 个字符。', 'Password cannot exceed 4096 characters.'));
   const host = normalizeHost(ui.host.value);
@@ -836,7 +859,9 @@ function readProfileFromForm(password: string): Promise<SavedProfile> {
     group: existing?.group ?? '个人',
     location: existing?.location ?? null,
     system: existing?.system ?? null,
-    hasCredential: true,
+    hasCredential: authMethod() === 'password'
+      ? Boolean(password)
+      : Boolean(privateKey) || Boolean(existing?.authMethod === 'publickey' && existing.hasCredential),
     host,
     port,
     username,
@@ -848,8 +873,15 @@ function readProfileFromForm(password: string): Promise<SavedProfile> {
     updatedAt: Date.now(),
   };
   if (profile.authMethod === 'password') profile.password = password;
-  else profile.privateKey = ui.privateKey.value;
+  else if (replacePrivateKey) profile.privateKey = privateKey;
   return Promise.resolve(profile);
+}
+
+function validatePrivateKeyValue(key: string): string | null {
+  if (!key) return bilingual('请粘贴或选择未加密的 OpenSSH 私钥。', 'Paste or choose an unencrypted OpenSSH private key.');
+  if (new TextEncoder().encode(key).length > MAX_KEY_BYTES) return bilingual('私钥大于 64 KiB。', 'The private key is larger than 64 KiB.');
+  if (!key.includes('BEGIN OPENSSH PRIVATE KEY')) return bilingual('仅支持未加密的 OpenSSH 私钥。', 'Only unencrypted OpenSSH private keys are supported.');
+  return null;
 }
 
 function validateProfileFields(): string | null {
@@ -870,9 +902,11 @@ function validateConnection(): string | null {
   if (profileError) return profileError;
   if (authMethod() === 'publickey') {
     const key = ui.privateKey.value.trim();
-    if (!key) return bilingual('请粘贴或选择未加密的 OpenSSH 私钥。', 'Paste or choose an unencrypted OpenSSH private key.');
-    if (new TextEncoder().encode(key).length > MAX_KEY_BYTES) return bilingual('私钥大于 64 KiB。', 'The private key is larger than 64 KiB.');
-    if (!key.includes('BEGIN OPENSSH PRIVATE KEY')) return bilingual('仅支持未加密的 OpenSSH 私钥。', 'Only unencrypted OpenSSH private keys are supported.');
+    const savedProfile = savedProfileForForm();
+    if (!key && !(savedProfile?.authMethod === 'publickey' && savedProfile.hasCredential)) {
+      return bilingual('请粘贴或选择未加密的 OpenSSH 私钥。', 'Paste or choose an unencrypted OpenSSH private key.');
+    }
+    if (key) return validatePrivateKeyValue(key);
   }
   return null;
 }
@@ -901,12 +935,18 @@ async function applyProfile(profile: SavedProfile): Promise<void> {
   ui.fingerprint.value = profile.fingerprint || hostKeys[targetKey(profile.host, profile.port, profile.username)] || '';
   setAuthMethod(profile.authMethod);
   passwordDirty = false;
-  historyPasswordLoading = true;
+  historyPasswordLoading = profile.authMethod === 'password';
   setState(connectionState);
   renderProfiles();
+  updateSavedPrivateKeyStatus();
+  if (profile.authMethod === 'publickey') {
+    historyPasswordLoading = false;
+    setState(connectionState);
+    return;
+  }
   let credentials: Credentials;
   try {
-    credentials = await hostCredentials(profile.id);
+    credentials = await hostCredentials(profile.id, 'password-field');
   } catch (error) {
     if (loadGeneration === historyPasswordLoadGeneration) {
       historyPasswordLoading = false;
@@ -922,7 +962,7 @@ async function applyProfile(profile: SavedProfile): Promise<void> {
     && !passwordDirty;
   if (selectionUnchanged) {
     ui.password.value = credentials.password ?? '';
-    ui.privateKey.value = credentials.privateKey ?? '';
+    ui.privateKey.value = '';
   }
   setState(connectionState);
 }
@@ -1687,10 +1727,22 @@ async function connect(): Promise<void> {
 
   try {
     const password = ui.password.value;
-    const privateKey = ui.privateKey.value.trim();
+    let privateKey = ui.privateKey.value.trim();
+    const replacePrivateKey = Boolean(privateKey);
     const method = authMethod();
+    if (method === 'publickey' && !privateKey) {
+      const profile = savedProfileForForm();
+      if (profile?.authMethod === 'publickey' && profile.hasCredential) {
+        const credentials = await hostCredentials(profile.id, 'connect');
+        privateKey = credentials.privateKey?.trim() ?? '';
+      }
+    }
+    if (method === 'publickey') {
+      const keyError = validatePrivateKeyValue(privateKey);
+      if (keyError) throw new Error(keyError);
+    }
     const term = ui.termType.value;
-    const historyProfile = readProfileFromForm(password);
+    const historyProfile = readProfileFromForm(password, privateKey, replacePrivateKey);
     // Resolve encryption during the SSH handshake so ready can usually save synchronously.
     void historyProfile.catch(() => undefined);
     pendingHistory = { generation, target: currentTargetKey, profile: historyProfile };
@@ -1948,6 +2000,7 @@ function applyWSSHOptions(options: WSSHOptions): void {
   if (options.term !== undefined) ui.termType.value = options.term;
   if (options.encoding !== undefined) ui.encoding.value = options.encoding;
   if (options.fingerprint !== undefined) ui.fingerprint.value = options.fingerprint;
+  updateSavedPrivateKeyStatus();
 }
 
 function initializeCompatibilityAPI(): void {
@@ -2007,6 +2060,8 @@ ui.password.addEventListener('input', () => {
 for (const field of [ui.host, ui.port, ui.username]) {
   field.addEventListener('input', cancelHistoryPasswordLoad);
 }
+ui.form.addEventListener('input', updateSavedPrivateKeyStatus);
+ui.form.addEventListener('change', updateSavedPrivateKeyStatus);
 ui.revealPassword.addEventListener('click', () => {
   const reveal = ui.password.type === 'password';
   ui.password.type = reveal ? 'text' : 'password';

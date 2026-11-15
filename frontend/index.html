@@ -166,6 +166,7 @@
                     <small data-i18n-zh="未加密 OpenSSH" data-i18n-en="unencrypted OpenSSH">未加密 OpenSSH</small>
                   </span>
                   <textarea id="private-key" name="privateKey" rows="5" maxlength="65536" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+                  <small id="private-key-status" aria-live="polite" hidden></small>
                 </label>
                 <label class="file-picker">
                   <input id="key-file" type="file" accept=".pem,.key,.openssh,text/plain" />

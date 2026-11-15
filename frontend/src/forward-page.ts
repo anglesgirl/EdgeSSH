@@ -337,7 +337,7 @@ export class ForwardPage {
     this.busy = true; this.render(); this.message('正在获取连接授权…');
     this.deadline = setTimeout(() => this.stop('连接超时，请检查主机后重试。'), 60_000);
     try {
-      const credentials = await hostCredentials(host.id);
+      const credentials = await hostCredentials(host.id, 'connect');
       if (generation !== this.generation) return;
       const ticket = await api<{ ticket: string; sessionId: string }>('/api/session', 'POST', {});
       if (generation !== this.generation) return;

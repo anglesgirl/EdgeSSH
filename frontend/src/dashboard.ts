@@ -418,7 +418,12 @@ export class Dashboard {
     for (const name of ['name', 'group', 'host', 'port', 'username', 'authMethod', 'fingerprint', 'initialCommand', 'termType', 'encoding'] as const) {
       if (host) this.field(name).value = String(host[name]);
     }
-    this.root.querySelectorAll('.credential-help').forEach((node) => { node.textContent = host ? '留空保留已保存的凭据；切换认证方式时需填写新凭据。' : '凭据仅由 Worker 加密后存入 D1。'; });
+    this.get('#cloud-password-field .credential-help').textContent = host && host.authMethod === 'password' && host.hasCredential
+      ? '已保存密码（隐藏）。留空保留；只有输入新密码并保存才会替换。'
+      : host ? '当前没有可保留的已保存密码；输入新密码，或切换认证方式。' : '密码会由 Worker 加密后保存。';
+    this.get('#cloud-key-field .credential-help').textContent = host && host.authMethod === 'publickey' && host.hasCredential
+      ? '已保存私钥（隐藏）。留空保留；只有输入新私钥并保存才会替换。'
+      : host ? '当前没有可保留的已保存私钥；输入新私钥并保存。' : '仅支持未加密的 OpenSSH 私钥。';
     const groups = this.get('#host-groups'); groups.replaceChildren();
     for (const group of new Set(this.hosts.map((item) => item.group))) {
       const option = document.createElement('option'); option.value = group; groups.append(option);
@@ -432,6 +437,12 @@ export class Dashboard {
     const key = this.field('authMethod').value === 'publickey';
     this.get('#cloud-password-field').hidden = key;
     this.get('#cloud-key-field').hidden = !key;
+    const savedCredential = Boolean(this.editing?.hasCredential && this.editing.authMethod === (key ? 'publickey' : 'password'));
+    if (key && savedCredential) {
+      this.get('#cloud-key-field .credential-help').textContent = '已保存私钥（隐藏）。留空保留；只有输入新私钥并保存才会替换。';
+    } else if (key && this.editing) {
+      this.get('#cloud-key-field .credential-help').textContent = '当前没有可保留的已保存私钥；输入新私钥并保存。';
+    }
   }
 
   private async save(): Promise<void> {
